@@ -1,4 +1,4 @@
-# pi-footer-ext
+# pi-footer
 
 A Pi extension that provides a fancy custom footer with session statistics.
 
