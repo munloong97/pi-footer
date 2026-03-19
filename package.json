@@ -1,0 +1,14 @@
+{
+  "name": "pi-footer-ext",
+  "version": "1.0.0",
+  "description": "Custom footer with tokens, cost, context usage, and model info",
+  "main": "footer.ts",
+  "keywords": ["pi", "extension", "footer", "ui", "stats"],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}
