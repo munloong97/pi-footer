@@ -25,11 +25,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
-			const sep = theme.fg("dim", " │ ");
 
 			return {
 				dispose: unsub,
 				invalidate() {},
+
 				render(width: number): string[] {
 					// --- Gather stats ---
 					let inp = 0, out = 0, cR = 0, cW = 0, cost = 0;
@@ -48,6 +48,8 @@ export default function (pi: ExtensionAPI) {
 					const ctxWindow = ctxUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 					const ctxPctVal = ctxUsage?.percent ?? 0;
 					const ctxPct = ctxUsage?.percent !== null ? ctxPctVal.toFixed(1) : "?";
+
+					const sep = theme.fg("dim", " │ ");
 
 					// ═══ Line 1: 📂 path  🌿 branch  📝 session ═══
 					let pwd = process.cwd();
@@ -83,7 +85,8 @@ export default function (pi: ExtensionAPI) {
 					let ctxStr: string;
 					if (ctxPctVal > 90) ctxStr = theme.fg("error", ctxDisplay);
 					else if (ctxPctVal > 70) ctxStr = theme.fg("warning", ctxDisplay);
-					else ctxStr = ctxDisplay;
+					else if (ctxPctVal > 50) ctxStr = theme.fg("accent", ctxDisplay);
+					else ctxStr = theme.fg("dim", ctxDisplay);
 					parts2L.push(`🧠 ${ctxStr}`);
 
 					const leftStr = " " + parts2L.join(sep);
@@ -91,12 +94,15 @@ export default function (pi: ExtensionAPI) {
 					// Model (right-aligned)
 					let modelStr = ctx.model?.id || "no-model";
 					if (ctx.model?.reasoning) {
-						const lvl = (ctx as any).thinkingLevel || "off";
+						const lvl = pi.getThinkingLevel?.() ?? "off";
 						modelStr += lvl === "off"
 							? theme.fg("muted", " • thinking off")
 							: theme.fg("accent", ` • ${lvl}`);
 					}
-					if (footerData.getAvailableProviderCount?.() > 1 && ctx.model) {
+
+					// Check if multiple providers available
+					const providerCount = footerData.getAvailableProviderCount?.() ?? 0;
+					if (providerCount > 1 && ctx.model) {
 						const withProv = `(${ctx.model.provider}) ${modelStr}`;
 						if (visibleWidth(leftStr) + 4 + visibleWidth(withProv) + 3 <= width) {
 							modelStr = withProv;
@@ -111,17 +117,11 @@ export default function (pi: ExtensionAPI) {
 					if (lW + 2 + rW <= width) {
 						const pad = " ".repeat(width - lW - rW);
 						line2 = leftStr + pad + rightStr;
-					} else if (lW + 2 + rW <= width + 2) {
-						line2 = leftStr + "  " + rightStr;
 					} else {
 						line2 = truncateToWidth(leftStr + sep + rightStr, width, theme.fg("dim", "…"));
 					}
 
-					const dimLine2Left = theme.fg("dim", leftStr);
-					const remainder = line2.slice(leftStr.length);
-					const dimLine2Right = theme.fg("dim", remainder);
-
-					const lines = [theme.fg("dim", line1), dimLine2Left + dimLine2Right];
+					const lines = [theme.fg("dim", line1), line2];
 
 					// Extension statuses
 					const statuses = footerData.getExtensionStatuses();
