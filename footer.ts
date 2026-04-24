@@ -128,6 +128,9 @@ export default function (pi: ExtensionAPI) {
 				invalidate() {},
 
 				render(width: number): string[] {
+					// SAFETY: Guard against very narrow terminals
+					const safeWidth = Math.max(width, 1);
+					
 					// --- Gather stats ---
 					let inp = 0, out = 0, cR = 0, cW = 0, cost = 0;
 					for (const e of ctx.sessionManager.getEntries()) {
@@ -154,15 +157,17 @@ export default function (pi: ExtensionAPI) {
 					// Node version
 					parts1.push(theme.fg("accent", process.version));
 
-					// Path with folder icon
-					let pwd = process.cwd();
-					const home = process.env.HOME || process.env.USERPROFILE;
-					if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
-					parts1.push(`📁 ${theme.fg("dim", pwd)}`);
+					// Path with folder icon (skip if terminal too narrow)
+					if (safeWidth > 40) {
+						let pwd = process.cwd();
+						const home = process.env.HOME || process.env.USERPROFILE;
+						if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
+						parts1.push(`📁 ${theme.fg("dim", pwd)}`);
+					}
 
 					// Branch with git icon and changes count
 					const branch = footerData.getGitBranch();
-					if (branch) {
+					if (branch && safeWidth > 50) {
 						const changes = getGitStatus();
 						const changesStr = changes.staged || changes.unstaged
 							? theme.fg("success", `+${changes.staged + changes.unstaged}`)
@@ -171,21 +176,26 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					const sessionName = ctx.sessionManager.getSessionName();
-					if (sessionName) parts1.push(`📝 ${theme.fg("muted", sessionName)}`);
+					if (sessionName && safeWidth > 60) parts1.push(`📝 ${theme.fg("muted", sessionName)}`);
 
-					const line1 = truncateToWidth(" " + parts1.join(sep), width, theme.fg("dim", "…"));
+					let line1: string;
+					if (parts1.length === 0) {
+						line1 = " " + theme.fg("dim", "...");
+					} else {
+						line1 = truncateToWidth(" " + parts1.join(sep), safeWidth, theme.fg("dim", "…"));
+					}
 
 					// ═══ Line 2+3: ═══
-					const lines: string[] = [" " + line1];
+					const lines: string[] = [truncateToWidth(line1, safeWidth)];
 
-					// PR info (if available)
+					// PR info (if available) - only on wider terminals
 					const prNumber = getPRNumber();
-					if (prNumber) {
+					if (prNumber && safeWidth > 30) {
 						const prUrl = getPRUrl(prNumber);
 						const prStr = prUrl 
 							? hyperlink(prUrl, `#${prNumber}`)
 							: `#${prNumber}`;
-						lines.push(` ⤾ ${theme.fg("accent", "PR")} ${theme.fg("muted", prStr)}`);
+						lines.push(truncateToWidth(` ⤾ ${theme.fg("accent", "PR")} ${theme.fg("muted", prStr)}`, safeWidth));
 					}
 
 					// Stats line: 📊 tokens │ 💰 cost │ 🧠 ctx │ 🤖 model
@@ -213,9 +223,9 @@ export default function (pi: ExtensionAPI) {
 
 					const leftStr = " " + parts2L.join(sep);
 
-					// Model (right-aligned)
+					// Model (right-aligned) - simplified for narrow terminals
 					let modelStr = ctx.model?.id || "no-model";
-					if (ctx.model?.reasoning) {
+					if (ctx.model?.reasoning && safeWidth > 70) {
 						const lvl = pi.getThinkingLevel?.() ?? "off";
 						modelStr += lvl === "off"
 							? theme.fg("muted", " • thinking off")
@@ -224,9 +234,9 @@ export default function (pi: ExtensionAPI) {
 
 					// Check if multiple providers available
 					const providerCount = footerData.getAvailableProviderCount?.() ?? 0;
-					if (providerCount > 1 && ctx.model) {
+					if (providerCount > 1 && ctx.model && safeWidth > 80) {
 						const withProv = `(${ctx.model.provider}) ${modelStr}`;
-						if (visibleWidth(leftStr) + 4 + visibleWidth(withProv) + 3 <= width) {
+						if (visibleWidth(leftStr) + 4 + visibleWidth(withProv) + 3 <= safeWidth) {
 							modelStr = withProv;
 						}
 					}
@@ -236,24 +246,27 @@ export default function (pi: ExtensionAPI) {
 					const rW = visibleWidth(rightStr);
 
 					let statsLine: string;
-					if (lW + 2 + rW <= width) {
-						const pad = " ".repeat(width - lW - rW);
+					if (lW + 2 + rW <= safeWidth) {
+						const pad = " ".repeat(safeWidth - lW - rW);
 						statsLine = leftStr + pad + rightStr;
+					} else if (safeWidth > 20) {
+						statsLine = truncateToWidth(leftStr + sep + rightStr, safeWidth, theme.fg("dim", "…"));
 					} else {
-						statsLine = truncateToWidth(leftStr + sep + rightStr, width, theme.fg("dim", "…"));
+						statsLine = theme.fg("dim", "...");
 					}
 					lines.push(statsLine);
 
 					// Extension statuses
 					const statuses = footerData.getExtensionStatuses();
-					if (statuses.size > 0) {
+					if (statuses.size > 0 && safeWidth > 30) {
 						const sorted = Array.from(statuses.entries())
 							.sort(([a], [b]) => a.localeCompare(b))
 							.map(([, t]) => sanitize(t));
-						lines.push(truncateToWidth(" " + sorted.join("  "), width, theme.fg("dim", "…")));
+						lines.push(truncateToWidth(" " + sorted.join("  "), safeWidth, theme.fg("dim", "…")));
 					}
 
-					return lines;
+					// Final safety: ensure all lines fit within width
+					return lines.map(line => truncateToWidth(line, safeWidth));
 				},
 			};
 		});
