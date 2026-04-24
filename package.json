@@ -3,12 +3,24 @@
   "version": "1.0.0",
   "description": "Custom footer with tokens, cost, context usage, and model info",
   "main": "footer.ts",
-  "keywords": ["pi", "extension", "footer", "ui", "stats"],
+  "scripts": {
+    "build": "tsc --noEmit"
+  },
+  "keywords": [
+    "pi",
+    "extension",
+    "footer",
+    "ui",
+    "stats"
+  ],
   "author": "",
   "license": "MIT",
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }

@@ -1,13 +1,110 @@
 /**
  * Fancy Footer Extension
  *
- * Line 1: 📂 ~/path  🌿 branch  📝 session-name
- * Line 2: 📊 ↑in ↓out Rcache Wcache │ 💰 $cost │ 🧠 ctx%/window │ 🤖 model • thinking
+ * Line 1: ⬢ node │ 📁 ~/path │ ⤴️ branch +0 │ 📝 session
+ * Line 2: ↻ PR #123 (optional, if in a PR)
+ * Line 3: 📊 ↑in ↓out Rcache Wcache │ 💰 $cost │ 🧠 ctx%/window │ 🤖 model
  */
 
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { execSync } from "child_process";
+
+function getGitStatus(): { staged: number; unstaged: number } {
+	try {
+		const output = execSync("git status --porcelain", { encoding: "utf-8", cwd: process.cwd() });
+		const lines = output.trim().split("\n").filter(Boolean);
+		let staged = 0, unstaged = 0;
+		for (const line of lines) {
+			if (line[0] && line[0] !== " " && line[0] !== "?") staged++;
+			if (line[1] && line[1] !== " ") unstaged++;
+		}
+		return { staged, unstaged };
+	} catch {
+		return { staged: 0, unstaged: 0 };
+	}
+}
+
+function getPRNumber(): number | null {
+	// Try to get PR number from various sources:
+	
+	// 1. gh CLI current branch PR (local dev)
+	try {
+		const output = execSync("gh pr view --json number -q .number 2>/dev/null", { 
+			encoding: "utf-8", 
+			cwd: process.cwd() 
+		});
+		const num = parseInt(output.trim(), 10);
+		if (!isNaN(num)) return num;
+	} catch { /* ignore */ }
+	
+	// 2. GitHub Actions environment
+	// GITHUB_HEAD_REF is set for PR events
+	if (process.env.GITHUB_EVENT_NAME === "pull_request" && process.env.GITHUB_REF_NAME) {
+		// GITHUB_REF_NAME is like "123/merge" for PR #123
+		const match = process.env.GITHUB_REF_NAME.match(/^(\d+)\/merge$/);
+		if (match) {
+			const num = parseInt(match[1], 10);
+			if (!isNaN(num)) return num;
+		}
+	}
+	
+	// 3. GITHUB_PR_NUMBER env var (custom/CI)
+	if (process.env.GITHUB_PR_NUMBER) {
+		const num = parseInt(process.env.GITHUB_PR_NUMBER, 10);
+		if (!isNaN(num)) return num;
+	}
+	
+	return null;
+}
+
+function getGitRemoteUrl(): string | null {
+	try {
+		const output = execSync("git remote get-url origin 2>/dev/null", { 
+			encoding: "utf-8", 
+			cwd: process.cwd() 
+		}).trim();
+		return output;
+	} catch {
+		return null;
+	}
+}
+
+function getPRUrl(prNumber: number): string | null {
+	// Try to get PR URL from gh CLI first
+	try {
+		const url = execSync(`gh pr view ${prNumber} --json url -q .url 2>/dev/null`, {
+			encoding: "utf-8",
+			cwd: process.cwd()
+		}).trim();
+		if (url) return url;
+	} catch { /* ignore */ }
+
+	const remoteUrl = getGitRemoteUrl();
+	if (!remoteUrl) return null;
+
+	// Convert git URL to web URL
+	// git@github.com:owner/repo.git -> https://github.com/owner/repo
+	// https://github.com/owner/repo.git -> https://github.com/owner/repo
+	let match = remoteUrl.match(/git@([^:]+):(.+?)\.?$/);
+	if (match) {
+		return `https://${match[1]}/${match[2]}/pull/${prNumber}`;
+	}
+
+	match = remoteUrl.match(/https?:\/\/[^\/]+\/(.+?)\.?$/);
+	if (match) {
+		const base = remoteUrl.replace(/\.git$/, "");
+		return `${base}/pull/${prNumber}`;
+	}
+
+	return null;
+}
+
+/** Create clickable terminal hyperlink using OSC 8 */
+function hyperlink(url: string, text: string): string {
+	return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
+}
 
 function fmtTokens(n: number): string {
 	if (n < 1000) return n.toString();
@@ -51,22 +148,47 @@ export default function (pi: ExtensionAPI) {
 
 					const sep = theme.fg("dim", " │ ");
 
-					// ═══ Line 1: 📂 path  🌿 branch  📝 session ═══
+					// ═══ Line 1: ⬢ node  📂 path  🌿 branch (+changes)  📝 session ═══
+					const parts1: string[] = [];
+
+					// Node version
+					parts1.push(theme.fg("accent", process.version));
+
+					// Path with folder icon
 					let pwd = process.cwd();
 					const home = process.env.HOME || process.env.USERPROFILE;
 					if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
+					parts1.push(`📁 ${theme.fg("dim", pwd)}`);
 
-					const parts1: string[] = [`📂 ${pwd}`];
-
+					// Branch with git icon and changes count
 					const branch = footerData.getGitBranch();
-					if (branch) parts1.push(`🌿 ${theme.fg("accent", branch)}`);
+					if (branch) {
+						const changes = getGitStatus();
+						const changesStr = changes.staged || changes.unstaged
+							? theme.fg("success", `+${changes.staged + changes.unstaged}`)
+							: theme.fg("muted", "+ 0");
+						parts1.push(`⤴️ ${theme.fg("accent", branch)} ${changesStr}`);
+					}
 
 					const sessionName = ctx.sessionManager.getSessionName();
 					if (sessionName) parts1.push(`📝 ${theme.fg("muted", sessionName)}`);
 
 					const line1 = truncateToWidth(" " + parts1.join(sep), width, theme.fg("dim", "…"));
 
-					// ═══ Line 2: 📊 tokens │ 💰 cost │ 🧠 ctx │ 🤖 model ═══
+					// ═══ Line 2+3: ═══
+					const lines: string[] = [" " + line1];
+
+					// PR info (if available)
+					const prNumber = getPRNumber();
+					if (prNumber) {
+						const prUrl = getPRUrl(prNumber);
+						const prStr = prUrl 
+							? hyperlink(prUrl, `#${prNumber}`)
+							: `#${prNumber}`;
+						lines.push(` ⤾ ${theme.fg("accent", "PR")} ${theme.fg("muted", prStr)}`);
+					}
+
+					// Stats line: 📊 tokens │ 💰 cost │ 🧠 ctx │ 🤖 model
 					const parts2L: string[] = [];
 
 					// Tokens
@@ -113,15 +235,14 @@ export default function (pi: ExtensionAPI) {
 					const lW = visibleWidth(leftStr);
 					const rW = visibleWidth(rightStr);
 
-					let line2: string;
+					let statsLine: string;
 					if (lW + 2 + rW <= width) {
 						const pad = " ".repeat(width - lW - rW);
-						line2 = leftStr + pad + rightStr;
+						statsLine = leftStr + pad + rightStr;
 					} else {
-						line2 = truncateToWidth(leftStr + sep + rightStr, width, theme.fg("dim", "…"));
+						statsLine = truncateToWidth(leftStr + sep + rightStr, width, theme.fg("dim", "…"));
 					}
-
-					const lines = [theme.fg("dim", line1), line2];
+					lines.push(statsLine);
 
 					// Extension statuses
 					const statuses = footerData.getExtensionStatuses();
