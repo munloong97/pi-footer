@@ -11,6 +11,81 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { execSync } from "child_process";
 
+// Cached values to avoid recomputing on every render
+let cachedGitStatus: { staged: number; unstaged: number; timestamp: number } | null = null;
+let cachedPRNumber: { number: number | null; timestamp: number } | null = null;
+let cachedStats: {
+	inp: number;
+	out: number;
+	cR: number;
+	cW: number;
+	cost: number;
+	timestamp: number;
+	entryCount: number;
+} | null = null;
+
+const GIT_CACHE_MS = 2000; // Cache git status for 2 seconds
+const PR_CACHE_MS = 10000; // Cache PR number for 10 seconds
+const STATS_CACHE_MS = 500; // Cache stats for 500ms
+
+function getCachedGitStatus(): { staged: number; unstaged: number } {
+	const now = Date.now();
+	if (cachedGitStatus && now - cachedGitStatus.timestamp < GIT_CACHE_MS) {
+		return { staged: cachedGitStatus.staged, unstaged: cachedGitStatus.unstaged };
+	}
+	
+	try {
+		const output = execSync("git status --porcelain", { encoding: "utf-8", cwd: process.cwd() });
+		const lines = output.trim().split("\n").filter(Boolean);
+		let staged = 0, unstaged = 0;
+		for (const line of lines) {
+			if (line[0] && line[0] !== " " && line[0] !== "?") staged++;
+			if (line[1] && line[1] !== " ") unstaged++;
+		}
+		cachedGitStatus = { staged, unstaged, timestamp: now };
+		return { staged, unstaged };
+	} catch {
+		return { staged: 0, unstaged: 0 };
+	}
+}
+
+function getCachedPRNumber(): number | null {
+	const now = Date.now();
+	if (cachedPRNumber && now - cachedPRNumber.timestamp < PR_CACHE_MS) {
+		return cachedPRNumber.number;
+	}
+	
+	let result: number | null = null;
+	
+	// 1. gh CLI current branch PR (local dev)
+	try {
+		const output = execSync("gh pr view --json number -q .number 2>/dev/null", { 
+			encoding: "utf-8", 
+			cwd: process.cwd() 
+		});
+		const num = parseInt(output.trim(), 10);
+		if (!isNaN(num)) result = num;
+	} catch { /* ignore */ }
+	
+	// 2. GitHub Actions environment
+	if (!result && process.env.GITHUB_EVENT_NAME === "pull_request" && process.env.GITHUB_REF_NAME) {
+		const match = process.env.GITHUB_REF_NAME.match(/^(\d+)\/merge$/);
+		if (match) {
+			const num = parseInt(match[1], 10);
+			if (!isNaN(num)) result = num;
+		}
+	}
+	
+	// 3. GITHUB_PR_NUMBER env var (custom/CI)
+	if (!result && process.env.GITHUB_PR_NUMBER) {
+		const num = parseInt(process.env.GITHUB_PR_NUMBER, 10);
+		if (!isNaN(num)) result = num;
+	}
+	
+	cachedPRNumber = { number: result, timestamp: now };
+	return result;
+}
+
 function getGitStatus(): { staged: number; unstaged: number } {
 	try {
 		const output = execSync("git status --porcelain", { encoding: "utf-8", cwd: process.cwd() });
@@ -131,17 +206,34 @@ export default function (pi: ExtensionAPI) {
 					// SAFETY: Guard against very narrow terminals
 					const safeWidth = Math.max(width, 1);
 					
-					// --- Gather stats ---
+					// --- Gather stats with caching ---
+					const now = Date.now();
+					const entries = ctx.sessionManager.getEntries();
+					
 					let inp = 0, out = 0, cR = 0, cW = 0, cost = 0;
-					for (const e of ctx.sessionManager.getEntries()) {
-						if (e.type === "message" && e.message.role === "assistant") {
-							const m = e.message as AssistantMessage;
-							inp += m.usage.input;
-							out += m.usage.output;
-							cR += m.usage.cacheRead;
-							cW += m.usage.cacheWrite;
-							cost += m.usage.cost.total;
+					
+					if (cachedStats && 
+					    now - cachedStats.timestamp < STATS_CACHE_MS &&
+					    cachedStats.entryCount === entries.length) {
+						// Use cached stats
+						inp = cachedStats.inp;
+						out = cachedStats.out;
+						cR = cachedStats.cR;
+						cW = cachedStats.cW;
+						cost = cachedStats.cost;
+					} else {
+						// Compute stats
+						for (const e of entries) {
+							if (e.type === "message" && e.message.role === "assistant") {
+								const m = e.message as AssistantMessage;
+								inp += m.usage.input;
+								out += m.usage.output;
+								cR += m.usage.cacheRead;
+								cW += m.usage.cacheWrite;
+								cost += m.usage.cost.total;
+							}
 						}
+						cachedStats = { inp, out, cR, cW, cost, timestamp: now, entryCount: entries.length };
 					}
 
 					const ctxUsage = ctx.getContextUsage();
@@ -165,10 +257,10 @@ export default function (pi: ExtensionAPI) {
 						parts1.push(`📁 ${theme.fg("dim", pwd)}`);
 					}
 
-					// Branch with git icon and changes count
+					// Branch with git icon and changes count (cached)
 					const branch = footerData.getGitBranch();
 					if (branch && safeWidth > 50) {
-						const changes = getGitStatus();
+						const changes = getCachedGitStatus();
 						const changesStr = changes.staged || changes.unstaged
 							? theme.fg("success", `+${changes.staged + changes.unstaged}`)
 							: theme.fg("muted", "+ 0");
@@ -188,8 +280,8 @@ export default function (pi: ExtensionAPI) {
 					// ═══ Line 2+3: ═══
 					const lines: string[] = [truncateToWidth(line1, safeWidth)];
 
-					// PR info (if available) - only on wider terminals
-					const prNumber = getPRNumber();
+					// PR info (if available) - only on wider terminals (cached)
+					const prNumber = getCachedPRNumber();
 					if (prNumber && safeWidth > 30) {
 						const prUrl = getPRUrl(prNumber);
 						const prStr = prUrl 
